@@ -14,13 +14,13 @@ def rnn_metrics(score_test, score_norm):
     score_test=list(np.array(score_test)[np.where(score_test)!=0].squeeze())
     y_true = np.r_[np.ones(len(score_test)),np.zeros(len(score_norm))]
 
-    # 模型预测的概率
+    # Model-predicted probabilities
     y_scores = np.r_[score_test,score_norm]
     y_pre=np.array([1 if i>70 else 0 for i in y_scores])
-    # 计算FPR, TPR, 和阈值
+    # Calculate FPR, TPR, and thresholds
     fpr, tpr, thresholds = roc_curve(y_true, y_scores)
     tn,fp,fn,tp=confusion_matrix(y_true,y_pre).ravel()
-    # 计算AUC 
+    # Calculate AUC
     roc_auc = auc_(fpr, tpr)
     bacc=balanced_accuracy_score(y_true, y_pre, adjusted=False)
     f1 = f1_score(y_true, y_pre)

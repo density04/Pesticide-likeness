@@ -16,7 +16,7 @@ def fun_classifer(filepath):
 
     pos_data=list(open("data/fun1.txt"))
     neg_data=list(open("data/neg.txt"))[:len(pos_data)]
-    dcan_data=pp.get_dcan_dataset(pos_data,neg_data) #设置原子字典
+    dcan_data=pp.get_dcan_dataset(pos_data,neg_data) # Set the atom dictionary
     
     data=list(open(filepath))
 

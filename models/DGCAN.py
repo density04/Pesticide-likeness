@@ -6,196 +6,196 @@ Created on Wed Apr 27 18:04:58 2022
 """
 
 # coding=utf-8
-import timeit  # 导入计时模块
-import sys  # 导入系统模块
+import timeit  # Import the timing module
+import sys  # Import the system module
 import os
-import numpy as np  # 导入numpy库
-import math  # 导入数学库
-import torch  # 导入PyTorch库
-import torch.nn as nn  # 导入PyTorch的神经网络模块
-import torch.nn.functional as F  # 导入PyTorch的功能性神经网络模块
-import torch.optim as optim  # 导入PyTorch的优化器模块
-import pickle  # 导入pickle模块，用于序列化
-from sklearn.metrics import roc_auc_score, roc_curve  # 导入ROC AUC分数和ROC曲线的计算函数
-from sklearn.metrics import confusion_matrix  # 导入混淆矩阵的计算函数
-# import preprocess as pp  # 导入自定义的预处理模块
-import pandas as pd  # 导入Pandas库，用于数据处理
-import matplotlib.pyplot as plt  # 导入Matplotlib库，用于绘图
+import numpy as np  # Import the NumPy library
+import math  # Import the math library
+import torch  # Import the PyTorch library
+import torch.nn as nn  # Import the PyTorch neural network module
+import torch.nn.functional as F  # Import PyTorch functional neural network module
+import torch.optim as optim  # Import the PyTorch optimizer module
+import pickle  # Import the pickle module for serialization
+from sklearn.metrics import roc_auc_score, roc_curve  # Import functions for ROC AUC score and ROC curve calculation
+from sklearn.metrics import confusion_matrix  # Import the confusion matrix calculation function
+# import preprocess as pp  # Import the custom preprocessing module
+import pandas as pd  # Import the Pandas library for data processing
+import matplotlib.pyplot as plt  # Import the Matplotlib library for plotting
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import dataset.DGCAN_Dataset as pp
 
 
-# 判断是否可以使用GPU，如果可以则使用GPU
+# Check whether GPU is available and use it if possible
 if torch.cuda.is_available():
-    device = torch.device('cuda')  # 使用GPU
+    device = torch.device('cuda')  # Use GPU
 else:
-    device = torch.device('cpu')  # 使用CPU
+    device = torch.device('cpu')  # Use CPU
 
-torch.cuda.empty_cache()  # 清空CUDA缓存
+torch.cuda.empty_cache()  # Clear the CUDA cache
 
 
 class GraphAttentionLayer(nn.Module):
     def __init__(self, in_features, out_features, dropout, alpha, concat=True):
-        super(GraphAttentionLayer, self).__init__()  # 初始化父类
-        self.dropout = dropout  # dropout率
-        self.concat = concat  # 是否拼接
-        self.in_features = in_features  # 输入特征的维度
-        self.out_features = out_features  # 输出特征的维度
-        self.alpha = alpha  # LeakyReLU的负斜率
-        self.W = nn.Parameter(torch.zeros(size=(in_features, out_features)))  # 权重矩阵
+        super(GraphAttentionLayer, self).__init__()  # Initialize the parent class
+        self.dropout = dropout  # Dropout rate
+        self.concat = concat  # Whether to concatenate
+        self.in_features = in_features  # Input feature dimension
+        self.out_features = out_features  # Output feature dimension
+        self.alpha = alpha  # Negative slope of LeakyReLU
+        self.W = nn.Parameter(torch.zeros(size=(in_features, out_features)))  # Weight matrix
 
-        self.a = nn.Parameter(torch.zeros(size=(2 * out_features, 1)))  # 注意力系数
-        torch.nn.init.xavier_uniform_(self.W, gain=2.0)  # 使用Xavier初始化权重
-        torch.nn.init.xavier_uniform_(self.W, gain=1.9)  # 重新使用Xavier初始化
-        self.leakyrelu = nn.LeakyReLU(self.alpha)  # LeakyReLU激活函数
+        self.a = nn.Parameter(torch.zeros(size=(2 * out_features, 1)))  # Attention coefficients
+        torch.nn.init.xavier_uniform_(self.W, gain=2.0)  # Initialize weights with Xavier initialization
+        torch.nn.init.xavier_uniform_(self.W, gain=1.9)  # Reinitialize with Xavier initialization
+        self.leakyrelu = nn.LeakyReLU(self.alpha)  # LeakyReLU activation function
 
-    def forward(self, input, adj):  # 定义前向传播
+    def forward(self, input, adj):  # Define the forward pass
         """
-        input: 输入特征 [N, in_features]，N为节点数量
-        adj: 图的邻接矩阵，维度为 [N, N]，非零值为1，表示连接
+        input: input features [N, in_features], where N is the number of nodes
+        adj: graph adjacency matrix with shape [N, N]; nonzero values indicate edges
         """
-        # h = torch.mm(input.cpu(), self.W.cpu())  # 计算节点特征的线性变换 [N, out_features]
+        # h = torch.mm(input.cpu(), self.W.cpu())  # Calculate the linear transformation of node features [N, out_features]
         h = torch.mm(input, self.W) 
-        N = h.size()[0]  # 图中节点的数量
-        # 计算注意力系数
+        N = h.size()[0]  # Number of nodes in the graph
+        # Calculate attention coefficients
         a_input = torch.cat([h.repeat(1, N).view(N * N, -1), h.repeat(N, 1)], dim=1).view(N, -1,
                                                                                           2 * self.out_features)  # [N, N, 2*out_features]
-        # e = self.leakyrelu(torch.matmul(a_input.cpu(), self.a.cpu()).squeeze(2))  # 计算注意力权重
+        # e = self.leakyrelu(torch.matmul(a_input.cpu(), self.a.cpu()).squeeze(2))  # Calculate attention weights
         e = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(2))
-        zero_vec = -9e10 * torch.ones_like(e)  # 创建一个很小的值的向量
-        attention = torch.where(adj > 0, e, zero_vec)  # 依据邻接矩阵生成注意力权重
-        # 如果邻接矩阵对应位置大于0，则保留该位置的注意力权重；否则设为很小的值
-        attention = F.softmax(attention, dim=1)  # 对注意力权重进行softmax归一化
-        attention = F.dropout(attention, self.dropout, training=self.training)  # 应用dropout
-        h_prime = torch.matmul(attention, h)  # 计算加权特征
+        zero_vec = -9e10 * torch.ones_like(e)  # Create a vector with very small values
+        attention = torch.where(adj > 0, e, zero_vec)  # Generate attention weights from the adjacency matrix
+        # If the corresponding adjacency entry is greater than 0, keep that attention weight; otherwise set it to a very small value
+        attention = F.softmax(attention, dim=1)  # Apply softmax normalization to attention weights
+        attention = F.dropout(attention, self.dropout, training=self.training)  # Apply dropout
+        h_prime = torch.matmul(attention, h)  # Calculate weighted features
         if self.concat:
-            return F.elu(h_prime)  # ELU激活后返回
+            return F.elu(h_prime)  # Return after ELU activation
         else:
-            return h_prime  # 返回加权特征
+            return h_prime  # Return weighted features
 
 
 class GAT(nn.Module):
     def __init__(self, nfeat, nhid, dropout, alpha, nheads):
-        super(GAT, self).__init__()  # 初始化父类
+        super(GAT, self).__init__()  # Initialize the parent class
         """
-        n_heads表示有多少个GAT层，最终将这些层拼接在一起，类似于自注意力机制
-        用于从不同子空间提取特征。
+        n_heads indicates how many GAT layers are used; these layers are concatenated like a self-attention mechanism
+        They extract features from different subspaces.
         """
-        self.dropout = dropout  # dropout率
-        # 创建多个图注意力层
+        self.dropout = dropout  # Dropout rate
+        # Create multiple graph attention layers
         self.attentions = [GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) for _ in
                            range(nheads)]
         for i, attention in enumerate(self.attentions):
-            self.add_module('attention_{}'.format(i), attention)  # 添加每个注意力层到模型中
+            self.add_module('attention_{}'.format(i), attention)  # Add each attention layer to the model
 
-        self.out_att = GraphAttentionLayer(nhid, 56, dropout=dropout, alpha=alpha, concat=False)  # 输出的GAT层
-        self.nheads = nheads  # 头数
+        self.out_att = GraphAttentionLayer(nhid, 56, dropout=dropout, alpha=alpha, concat=False)  # Output GAT layer
+        self.nheads = nheads  # Number of heads
 
-    def forward(self, x, adj):  # 定义前向传播
-        x = F.dropout(x, self.dropout, training=self.training)  # 应用dropout
-        z = torch.zeros_like(self.attentions[1](x, adj))  # 初始化加权特征
-        # 聚合各个注意力层的输出
+    def forward(self, x, adj):  # Define the forward pass
+        x = F.dropout(x, self.dropout, training=self.training)  # Apply dropout
+        z = torch.zeros_like(self.attentions[1](x, adj))  # Initialize weighted features
+        # Aggregate the outputs of all attention layers
         for att in self.attentions:
-            z = torch.add(z, att(x, adj))  # 累加每个注意力层的输出
-        x = z / self.nheads  # 计算各头的平均值
-        x = F.dropout(x, self.dropout, training=self.training)  # 再次应用dropout
-        x = F.elu(self.out_att(x, adj))  # 经过最后的GAT层和ELU激活
-        return F.softmax(x, dim=1)  # 返回经过softmax的输出
+            z = torch.add(z, att(x, adj))  # Accumulate each attention layer output
+        x = z / self.nheads  # Calculate the average across heads
+        x = F.dropout(x, self.dropout, training=self.training)  # Apply dropout again
+        x = F.elu(self.out_att(x, adj))  # Pass through the final GAT layer and ELU activation
+        return F.softmax(x, dim=1)  # Return the softmax output
 
 
 class MolecularGraphNeuralNetwork(nn.Module):
     def __init__(self, N_fingerprints, dim, layer_hidden, layer_output, dropout):
-        super(MolecularGraphNeuralNetwork, self).__init__()  # 初始化父类
-        self.layer_hidden = layer_hidden  # 隐藏层数量
-        self.layer_output = layer_output  # 输出层数量
-        self.embed_fingerprint = nn.Embedding(N_fingerprints, dim)  # 定义指纹嵌入层
-        self.W_fingerprint = nn.ModuleList([nn.Linear(dim, dim) for _ in range(layer_hidden)])  # 定义多个线性层
+        super(MolecularGraphNeuralNetwork, self).__init__()  # Initialize the parent class
+        self.layer_hidden = layer_hidden  # Number of hidden layers
+        self.layer_output = layer_output  # Number of output layers
+        self.embed_fingerprint = nn.Embedding(N_fingerprints, dim)  # Define the fingerprint embedding layer
+        self.W_fingerprint = nn.ModuleList([nn.Linear(dim, dim) for _ in range(layer_hidden)])  # Define multiple linear layers
 
-        self.W_output = nn.ModuleList([nn.Linear(56, 56) for _ in range(layer_output)])  # 定义输出层的线性层
-        self.W_property = nn.Linear(56, 2)  # 定义属性预测层
+        self.W_output = nn.ModuleList([nn.Linear(56, 56) for _ in range(layer_output)])  # Define the linear layers in the output layer
+        self.W_property = nn.Linear(56, 2)  # Define the property prediction layer
 
-        self.dropout = dropout  # dropout率
-        self.alpha = 0.25  # LeakyReLU的负斜率
-        self.nheads = 2  # 注意力头数
-        self.attentions = GAT(dim, dim, dropout, alpha=self.alpha, nheads=self.nheads).to(device)  # 初始化GAT层并移动到设备
+        self.dropout = dropout  # Dropout rate
+        self.alpha = 0.25  # Negative slope of LeakyReLU
+        self.nheads = 2  # Number of attention heads
+        self.attentions = GAT(dim, dim, dropout, alpha=self.alpha, nheads=self.nheads).to(device)  # Initialize the GAT layer and move it to the device
 
     def pad(self, matrices, pad_value):
-        """对矩阵列表进行填充，方便批处理。
-        例如，给定矩阵列表 [A, B, C]，
-        我们得到新矩阵 [A00, 0B0, 00C]，其中0为填充值。
+        """Pad the matrix list for batch processing.
+        For example, given the matrix list [A, B, C],
+        we get a new matrix [A00, 0B0, 00C], where 0 is the padding value.
         """
-        shapes = [m.shape for m in matrices]  # 获取矩阵的形状
-        M, N = sum([s[0] for s in shapes]), sum([s[1] for s in shapes])  # 计算填充后的矩阵的大小
-        zeros = torch.FloatTensor(np.zeros((M, N))).to(device)  # 创建一个全零的填充矩阵
-        pad_matrices = pad_value + zeros  # 初始化填充矩阵
-        i, j = 0, 0  # 初始化索引
+        shapes = [m.shape for m in matrices]  # Get the matrix shapes
+        M, N = sum([s[0] for s in shapes]), sum([s[1] for s in shapes])  # Calculate the size of the padded matrix
+        zeros = torch.FloatTensor(np.zeros((M, N))).to(device)  # Create an all-zero padding matrix
+        pad_matrices = pad_value + zeros  # Initialize the padding matrix
+        i, j = 0, 0  # Initialize indices
         for k, matrix in enumerate(matrices):
-            m, n = shapes[k]  # 获取每个矩阵的形状
-            pad_matrices[i:i + m, j:j + n] = matrix  # 将矩阵填充到新的矩阵中
-            i += m  # 更新行索引
-            j += n  # 更新列索引
-        return pad_matrices  # 返回填充后的矩阵
+            m, n = shapes[k]  # Get each matrix shape
+            pad_matrices[i:i + m, j:j + n] = matrix  # Fill the new matrix with the current matrix
+            i += m  # Update the row index
+            j += n  # Update the column index
+        return pad_matrices  # Return the padded matrix
 
     def update(self, matrix, vectors, layer):
-        hidden_vectors = torch.relu(self.W_fingerprint[layer](vectors))  # 计算隐藏向量
+        hidden_vectors = torch.relu(self.W_fingerprint[layer](vectors))  # Calculate hidden vectors
 
-        return hidden_vectors + torch.matmul(matrix, hidden_vectors)  # 返回更新后的向量
+        return hidden_vectors + torch.matmul(matrix, hidden_vectors)  # Return updated vectors
 
     def sum(self, vectors, axis):
-        sum_vectors = [torch.sum(v, 0) for v in torch.split(vectors, axis)]  # 对向量按轴求和
-        return torch.stack(sum_vectors)  # 返回堆叠后的向量
+        sum_vectors = [torch.sum(v, 0) for v in torch.split(vectors, axis)]  # Sum vectors along the axis
+        return torch.stack(sum_vectors)  # Return the stacked vectors
 
     def gnn(self, inputs):
-        """将每个输入数据进行拼接或填充以进行批处理。"""
-        Smiles, fingerprints, adjacencies, molecular_sizes = inputs  # 解包输入
-        fingerprints = torch.cat(fingerprints)  # 拼接指纹
+        """Concatenate or pad each input item for batch processing."""
+        Smiles, fingerprints, adjacencies, molecular_sizes = inputs  # Unpack inputs
+        fingerprints = torch.cat(fingerprints)  # Concatenate fingerprints
         # fingerprints=fingerprints.cpu()
-        adj = self.pad(adjacencies, 0)  # 填充邻接矩阵
-        """GNN层（更新指纹向量）。"""
-        fingerprint_vectors = self.embed_fingerprint(fingerprints)  # 通过嵌入层生成指纹向量
+        adj = self.pad(adjacencies, 0)  # Pad adjacency matrices
+        """GNN layer for updating fingerprint vectors."""
+        fingerprint_vectors = self.embed_fingerprint(fingerprints)  # Generate fingerprint vectors through the embedding layer
 
-        for l in range(self.layer_hidden):  # 遍历每个隐藏层
-            # hs = self.update(adj.cpu(), fingerprint_vectors.cpu(), l)  # 更新指纹向量
+        for l in range(self.layer_hidden):  # Iterate over each hidden layer
+            # hs = self.update(adj.cpu(), fingerprint_vectors.cpu(), l)  # Update fingerprint vectors
             hs = self.update(adj, fingerprint_vectors, l) 
-            fingerprint_vectors = F.normalize(hs, 2, 1)  # 对更新后的向量进行L2归一化
-        """注意力层"""
-        # molecular_vectors = self.attentions(fingerprint_vectors.cpu(), adj.cpu())  # 通过GAT层获得分子向量
+            fingerprint_vectors = F.normalize(hs, 2, 1)  # Apply L2 normalization to the updated vectors
+        """Attention layer"""
+        # molecular_vectors = self.attentions(fingerprint_vectors.cpu(), adj.cpu())  # Obtain molecular vectors through the GAT layer
         molecular_vectors = self.attentions(fingerprint_vectors, adj)
-        """通过对指纹向量求和或均值获得分子向量。"""
-        molecular_vectors = self.sum(molecular_vectors, molecular_sizes)  # 按分子大小进行求和
-        return Smiles, molecular_vectors  # 返回SMILES和分子向量
+        """Obtain molecular vectors by summing or averaging fingerprint vectors."""
+        molecular_vectors = self.sum(molecular_vectors, molecular_sizes)  # Sum by molecular size
+        return Smiles, molecular_vectors  # Return SMILES and molecular vectors
 
     def mlp(self, vectors):
-        """基于多层感知机的回归器。"""
-        for l in range(self.layer_output):  # 遍历输出层
-            vectors = torch.relu(self.W_output[l](vectors))  # 激活输出向量
-        outputs = torch.sigmoid(self.W_property(vectors))  # 经过sigmoid获得最终输出
-        return outputs  # 返回输出
+        """Regressor based on a multilayer perceptron."""
+        for l in range(self.layer_output):  # Iterate over output layers
+            vectors = torch.relu(self.W_output[l](vectors))  # Activate output vectors
+        outputs = torch.sigmoid(self.W_property(vectors))  # Get the final output through sigmoid
+        return outputs  # Return outputs
 
     def forward_classifier(self, data_batch, train):
-        inputs = data_batch[:-1]  # 获取输入数据
-        correct_labels = torch.cat(data_batch[-1])  # 获取正确标签
+        inputs = data_batch[:-1]  # Get input data
+        correct_labels = torch.cat(data_batch[-1])  # Get correct labels
 
-        if train:  # 如果是训练模式
-            Smiles, molecular_vectors = self.gnn(inputs)  # 进行GNN前向传播
-            predicted_scores = self.mlp(molecular_vectors)  # 进行MLP前向传播
-            '''损失函数'''
-            loss = F.cross_entropy(predicted_scores, correct_labels)  # 计算交叉熵损失
-            predicted_scores = predicted_scores.to('cpu').data.numpy()  # 将预测分数移到CPU并转换为numpy数组
-            predicted_scores = [s[1] for s in predicted_scores]  # 提取第二类的预测分数
-            correct_labels = correct_labels.to('cpu').data.numpy()  # 将正确标签移到CPU并转换为numpy数组
-            return Smiles, loss, predicted_scores, correct_labels  # 返回SMILES，损失，预测分数和正确标签
-        else:  # 如果是测试模式
-            with torch.no_grad():  # 不计算梯度
-                Smiles, molecular_vectors = self.gnn(inputs)  # 进行GNN前向传播
-                predicted_scores = self.mlp(molecular_vectors)  # 进行MLP前向传播
-                # loss = F.cross_entropy(predicted_scores.cpu(), correct_labels.cpu())  # 计算交叉熵损失
+        if train:  # If this is training mode
+            Smiles, molecular_vectors = self.gnn(inputs)  # Run the GNN forward pass
+            predicted_scores = self.mlp(molecular_vectors)  # Run the MLP forward pass
+            '''Loss function'''
+            loss = F.cross_entropy(predicted_scores, correct_labels)  # Calculate cross-entropy loss
+            predicted_scores = predicted_scores.to('cpu').data.numpy()  # Move predicted scores to CPU and convert them to a NumPy array
+            predicted_scores = [s[1] for s in predicted_scores]  # Extract the prediction scores for the second class
+            correct_labels = correct_labels.to('cpu').data.numpy()  # Move correct labels to CPU and convert them to a NumPy array
+            return Smiles, loss, predicted_scores, correct_labels  # Return SMILES, loss, predicted scores, and correct labels
+        else:  # If this is test mode
+            with torch.no_grad():  # Do not calculate gradients
+                Smiles, molecular_vectors = self.gnn(inputs)  # Run the GNN forward pass
+                predicted_scores = self.mlp(molecular_vectors)  # Run the MLP forward pass
+                # loss = F.cross_entropy(predicted_scores.cpu(), correct_labels.cpu())  # Calculate cross-entropy loss
                 loss = F.cross_entropy(predicted_scores, correct_labels)
-            predicted_scores = predicted_scores.to('cpu').data.numpy()  # 将预测分数移到CPU并转换为numpy数组
-            predicted_scores = [s[1] for s in predicted_scores]  # 提取第二类的预测分数
-            correct_labels = correct_labels.to('cpu').data.numpy()  # 将正确标签移到CPU并转换为numpy数组
+            predicted_scores = predicted_scores.to('cpu').data.numpy()  # Move predicted scores to CPU and convert them to a NumPy array
+            predicted_scores = [s[1] for s in predicted_scores]  # Extract the prediction scores for the second class
+            correct_labels = correct_labels.to('cpu').data.numpy()  # Move correct labels to CPU and convert them to a NumPy array
             
-            return Smiles, loss, predicted_scores, correct_labels  # 返回SMILES，损失，预测分数和正确标签
+            return Smiles, loss, predicted_scores, correct_labels  # Return SMILES, loss, predicted scores, and correct labels
     def test(self, data) :
         self.eval()
         data=pp.create_testdataset(data,device=device)
@@ -206,61 +206,61 @@ class MolecularGraphNeuralNetwork(nn.Module):
 
 class Trainer(object):
     def __init__(self, model, lr, batch_train):
-        self.model = model  # 保存模型
-        self.batch_train = batch_train  # 保存训练批次大小
-        self.lr = lr  # 保存学习率
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)  # 使用Adam优化器
+        self.model = model  # Store the model
+        self.batch_train = batch_train  # Store the training batch size
+        self.lr = lr  # Store the learning rate
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)  # Use the Adam optimizer
 
     def train(self, dataset):
-        np.random.shuffle(dataset)  # 打乱数据集
-        N = len(dataset)  # 获取数据集的大小
+        np.random.shuffle(dataset)  # Shuffle the dataset
+        N = len(dataset)  # Get the dataset size
         # N = dataset.shape[0]
-        loss_total = 0  # 初始化总损失
-        SMILES, P, C = '', [], []  # 初始化SMILES，预测和正确标签列表
-        for i in range(0, N, self.batch_train):  # 按批次大小遍历数据集
-            data_batch = list(zip(*dataset[i:i + self.batch_train]))  # 获取当前批次数据
+        loss_total = 0  # Initialize total loss
+        SMILES, P, C = '', [], []  # Initialize SMILES, prediction, and correct-label lists
+        for i in range(0, N, self.batch_train):  # Iterate over the dataset by batch size
+            data_batch = list(zip(*dataset[i:i + self.batch_train]))  # Get the current batch data
             Smiles, loss, predicted_scores, correct_labels = self.model.forward_classifier(data_batch,
-                                                                                           train=True)  # 进行前向传播并计算损失
-            SMILES += ' '.join(Smiles) + ' '  # 拼接SMILES
-            P.append(predicted_scores)  # 保存预测分数
-            C.append(correct_labels)  # 保存正确标签
-            self.optimizer.zero_grad()  # 清零梯度
-            loss.backward()  # 反向传播
-            self.optimizer.step()  # 更新参数
-            loss_total += loss.item()  # 累加损失
-        tru = np.concatenate(C)  # 将所有正确标签合并
-        pre = np.concatenate(P)  # 将所有预测分数合并
-        AUC = roc_auc_score(tru, pre)  # 计算AUC分数
-        SMILES = SMILES.strip().split()  # 去除多余空格并分割SMILES
-        pred = [1 if i > 0.15 else 0 for i in pre]  # 根据阈值生成预测标签
-        predictions = np.stack((tru, pred, pre))  # 堆叠预测结果
-        return AUC, loss_total, predictions  # 返回AUC，损失和预测结果
+                                                                                           train=True)  # Run the forward pass and calculate loss
+            SMILES += ' '.join(Smiles) + ' '  # Concatenate SMILES
+            P.append(predicted_scores)  # Store predicted scores
+            C.append(correct_labels)  # Store correct labels
+            self.optimizer.zero_grad()  # Zero gradients
+            loss.backward()  # Backpropagate
+            self.optimizer.step()  # Update parameters
+            loss_total += loss.item()  # Accumulate loss
+        tru = np.concatenate(C)  # Concatenate all correct labels
+        pre = np.concatenate(P)  # Concatenate all predicted scores
+        AUC = roc_auc_score(tru, pre)  # Calculate the AUC score
+        SMILES = SMILES.strip().split()  # Remove extra spaces and split SMILES
+        pred = [1 if i > 0.15 else 0 for i in pre]  # Generate predicted labels from the threshold
+        predictions = np.stack((tru, pred, pre))  # Stack prediction results
+        return AUC, loss_total, predictions  # Return AUC, loss, and prediction results
 
 
 class Tester(object):
     def __init__(self, model, batch_test):
-        self.model = model  # 保存模型
-        self.batch_test = batch_test  # 保存测试批次大小
+        self.model = model  # Store the model
+        self.batch_test = batch_test  # Store the test batch size
 
     def test_classifier(self, dataset):
-        N = len(dataset)  # 获取数据集的大小
-        loss_total = 0  # 初始化总损失
-        SMILES, P, C = '', [], []  # 初始化SMILES，预测和正确标签列表
-        for i in range(0, N, self.batch_test):  # 按批次大小遍历数据集
-            data_batch = list(zip(*dataset[i:i + self.batch_test]))  # 获取当前批次数据
+        N = len(dataset)  # Get the dataset size
+        loss_total = 0  # Initialize total loss
+        SMILES, P, C = '', [], []  # Initialize SMILES, prediction, and correct-label lists
+        for i in range(0, N, self.batch_test):  # Iterate over the dataset by batch size
+            data_batch = list(zip(*dataset[i:i + self.batch_test]))  # Get the current batch data
             (Smiles, loss, predicted_scores, correct_labels) = self.model.forward_classifier(data_batch,
-                                                                                             train=False)  # 进行前向传播
-            SMILES += ' '.join(Smiles) + ' '  # 拼接SMILES
-            loss_total += loss.item()  # 累加损失
-            P.append(predicted_scores)  # 保存预测分数
-            C.append(correct_labels)  # 保存正确标签
-        SMILES = SMILES.strip().split()  # 去除多余空格并分割SMILES
-        tru = np.concatenate(C)  # 将所有正确标签合并
-        pre = np.concatenate(P)  # 将所有预测分数合并
-        pred = [1 if i > 0.15 else 0 for i in pre]  # 根据阈值生成预测标签
-        # AUC = roc_auc_score(tru, pre)  # 计算AUC分数
-        cnf_matrix = confusion_matrix(tru, pred)  # 计算混淆矩阵
-        predictions = np.stack((tru, pred, pre))  # 堆叠预测结果
+                                                                                             train=False)  # Run the forward pass
+            SMILES += ' '.join(Smiles) + ' '  # Concatenate SMILES
+            loss_total += loss.item()  # Accumulate loss
+            P.append(predicted_scores)  # Store predicted scores
+            C.append(correct_labels)  # Store correct labels
+        SMILES = SMILES.strip().split()  # Remove extra spaces and split SMILES
+        tru = np.concatenate(C)  # Concatenate all correct labels
+        pre = np.concatenate(P)  # Concatenate all predicted scores
+        pred = [1 if i > 0.15 else 0 for i in pre]  # Generate predicted labels from the threshold
+        # AUC = roc_auc_score(tru, pre)  # Calculate the AUC score
+        cnf_matrix = confusion_matrix(tru, pred)  # Calculate the confusion matrix
+        predictions = np.stack((tru, pred, pre))  # Stack prediction results
         return  predictions 
         # return predicted_scores
 
@@ -272,27 +272,27 @@ class Tester(object):
 
 class Tester(object):
     def __init__(self, model, batch_test):
-        self.model = model  # 保存模型
-        self.batch_test = batch_test  # 保存测试批次大小
+        self.model = model  # Store the model
+        self.batch_test = batch_test  # Store the test batch size
 
     def test_classifier(self, dataset):
-        N = len(dataset)  # 获取数据集的大小
-        loss_total = 0  # 初始化总损失
-        SMILES, P, C = '', [], []  # 初始化SMILES，预测和正确标签列表
-        for i in range(0, N, self.batch_test):  # 按批次大小遍历数据集
-            data_batch = list(zip(*dataset[i:i + self.batch_test]))  # 获取当前批次数据
+        N = len(dataset)  # Get the dataset size
+        loss_total = 0  # Initialize total loss
+        SMILES, P, C = '', [], []  # Initialize SMILES, prediction, and correct-label lists
+        for i in range(0, N, self.batch_test):  # Iterate over the dataset by batch size
+            data_batch = list(zip(*dataset[i:i + self.batch_test]))  # Get the current batch data
             (Smiles, loss, predicted_scores, correct_labels) = self.model.forward_classifier(data_batch,
-                                                                                             train=False)  # 进行前向传播
-            SMILES += ' '.join(Smiles) + ' '  # 拼接SMILES
-            loss_total += loss.item()  # 累加损失
-            P.append(predicted_scores)  # 保存预测分数
-            C.append(correct_labels)  # 保存正确标签
-        SMILES = SMILES.strip().split()  # 去除多余空格并分割SMILES
-        tru = np.concatenate(C)  # 将所有正确标签合并
-        pre = np.concatenate(P)  # 将所有预测分数合并
-        pred = [1 if i > 0.15 else 0 for i in pre]  # 根据阈值生成预测标签
-        # AUC = roc_auc_score(tru, pre)  # 计算AUC分数
-        cnf_matrix = confusion_matrix(tru, pred)  # 计算混淆矩阵
-        predictions = np.stack((tru, pred, pre))  # 堆叠预测结果
+                                                                                             train=False)  # Run the forward pass
+            SMILES += ' '.join(Smiles) + ' '  # Concatenate SMILES
+            loss_total += loss.item()  # Accumulate loss
+            P.append(predicted_scores)  # Store predicted scores
+            C.append(correct_labels)  # Store correct labels
+        SMILES = SMILES.strip().split()  # Remove extra spaces and split SMILES
+        tru = np.concatenate(C)  # Concatenate all correct labels
+        pre = np.concatenate(P)  # Concatenate all predicted scores
+        pred = [1 if i > 0.15 else 0 for i in pre]  # Generate predicted labels from the threshold
+        # AUC = roc_auc_score(tru, pre)  # Calculate the AUC score
+        cnf_matrix = confusion_matrix(tru, pred)  # Calculate the confusion matrix
+        predictions = np.stack((tru, pred, pre))  # Stack prediction results
         return  predictions[2,:]
         # return predicted_scores

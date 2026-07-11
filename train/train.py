@@ -19,11 +19,11 @@ np.random.seed(123)
 random.seed(123)
 torch.backends.cudnn.deterministic = True
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print("使用%s"%device)
+print("Using %s"%device)
 
 
 
-pos_data=list(open("data/ins.txt")) #训练集更改即可
+pos_data=list(open("data/ins.txt")) # Change the training set here
 neg_data=list(open("data/neg.txt"))[:len(pos_data)]
 train_data=pos_data+neg_data
 answer = [1 for _ in range(len(pos_data))] + [0 for _ in range(len(neg_data))]
@@ -65,7 +65,7 @@ DCAN_train_data=pp.to_gpu(DCAN_train_data,device)
 DCAN_model = DGCAN.MolecularGraphNeuralNetwork(5000,dim=52, layer_hidden=4, layer_output=10, dropout=0.45).to(device)
 DCAN_trainer = DGCAN.Trainer(DCAN_model, lr=3e-4, batch_train=8)
 for epoch in range(150):
-    if epoch % 25 == 0: #每25epoch衰减
-        DCAN_trainer.optimizer.param_groups[0]['lr'] *= 0.85 #衰减
+    if epoch % 25 == 0: # Decay every 25 epochs
+        DCAN_trainer.optimizer.param_groups[0]['lr'] *= 0.85 # Decay
     prediction_train, loss_train, train_res = DCAN_trainer.train(DCAN_train_data)
 torch.save(DCAN_model.state_dict(), 'dcan_model_all_fun.pth')

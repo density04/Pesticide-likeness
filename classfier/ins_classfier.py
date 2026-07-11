@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import torch
-from models import RNNLM, GCNModel, DGCAN  #import models相当于执行了__init__.py的内容,这里相当于从__init__.py里面引用RNNLM
+from models import RNNLM, GCNModel, DGCAN  #Importing models runs __init__.py and exposes RNNLM from it
 import numpy as np
 import dataset.DGCAN_Dataset as pp
 import pandas as pd
@@ -15,7 +15,7 @@ def ins_classifer(filepath):
 
     pos_data=list(open("data/ins1.txt"))
     neg_data=list(open("data/neg.txt"))[:len(pos_data)]
-    dcan_data=pp.get_dcan_dataset(pos_data,neg_data) #设置原子字典
+    dcan_data=pp.get_dcan_dataset(pos_data,neg_data) # Set the atom dictionary
 
     data=list(open(filepath))
 
